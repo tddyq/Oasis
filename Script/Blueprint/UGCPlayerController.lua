@@ -2,6 +2,17 @@
 --Edit Below--
 local UGCPlayerController = {}
 
+--[[
+    模块定位（方案A 模块一/二/四/五）：
+    1) 模块一/二：玩家输入 -> 服务端触发火焰技能
+    2) 模块四：客户端UI就绪后，请求服务端开启Boss倒计时（测试开关）
+    3) 模块五：点击Boss按钮后，服务端把当前玩家传送到 BossEntry（同会话）
+
+    设计原则：
+    - 所有会改动游戏状态的行为均在服务端执行
+    - 客户端函数只做输入与RPC发起
+]]
+
 -- 运行时配置模块：
 -- - fire_skill_class_path：主火焰技能蓝图类路径
 -- - fire_input_tags：触发技能的输入Tag数组
@@ -20,9 +31,11 @@ end
 -- 注意：这里要返回多个字符串值，不能写成一个逗号拼接的大字符串。
 function UGCPlayerController:GetAvailableServerRPCs()
     -- 关键修复：必须返回“多值”，不是一个逗号拼接字符串
+    -- 若白名单缺失，对应 RPC 即使函数存在也不会被远端调用。
     return
     "RequestTravelToBossMap",
-    "ServerRPC_TriggerFireSkill"
+    "ServerRPC_TriggerFireSkill",
+    "ServerRPC_DevStartBossChallenge"
 end
 
 -- PlayerController初始化回调（BeginPlay）：
@@ -75,8 +88,119 @@ end
 -- 示例RPC：客户端请求服务端切换关卡。
 -- 保留该函数便于验证RPC白名单机制是否工作正常。
 function UGCPlayerController:RequestTravelToBossMap()
-    log("RequestTravelToBossMap RPC received on server")
-    UGCMapInfoLib.TravelToLevel("/demo1/Map02")
+    -- 只允许服务端执行，避免客户端直接改位置导致状态不一致
+    if not UGCGameSystem.IsServer() then
+        return
+    end
+
+    local map_boss = pve_config.MAP_BOSS or "/demo1/Map02"
+    log("RequestTravelToBossMap RPC received on server ->", map_boss)
+
+    -- 点击挑战后先取消倒计时UI，防止按钮/数字残留在新阶段
+    local game_state = UGCGameSystem.GameState
+    if game_state and game_state.CancelBossChallenge then
+        game_state:CancelBossChallenge()
+    end
+
+    -- 子关卡方案：
+    -- 保持在 UGCMap 同一会话，不做 Travel；
+    -- 通过 Tag 查找 Boss 入口点并传送当前玩家 Pawn。
+    -- 这样能避免“子关卡切换导致重生流程不完整”的黑屏/观战态问题。
+    local player_pawn = UGCGameSystem.GetPlayerPawnByPlayerController(self)
+    if player_pawn == nil then
+        log("RequestTravelToBossMap failed: player_pawn nil")
+        return
+    end
+
+    local boss_entry_tag = pve_config.BOSS_ENTRY_TAG or "BossEntry"
+    local tagged_actors = {}
+    local gameplay_statics = UGameplayStatics or GameplayStatics
+    if gameplay_statics == nil then
+        log("RequestTravelToBossMap failed: UGameplayStatics/GameplayStatics both nil")
+        return
+    end
+
+    -- 使用 pcall 包裹引擎调用，防止运行时绑定差异导致脚本中断。
+    local query_ok, query_err = pcall(function()
+        gameplay_statics.GetAllActorsWithTag(self, boss_entry_tag, tagged_actors)
+    end)
+
+    if not query_ok then
+        log("RequestTravelToBossMap failed: GetAllActorsWithTag error", tostring(query_err))
+        return
+    end
+
+    local actor_count = #tagged_actors
+    log("RequestTravelToBossMap BossEntry candidates=", tostring(actor_count))
+    if actor_count <= 0 then
+        log("RequestTravelToBossMap failed: no actor with tag", tostring(boss_entry_tag))
+        return
+    end
+
+    local boss_level_name = tostring(map_boss)
+    if type(map_boss) == "string" then
+        local parsed_name = string.match(map_boss, ".*/([^/]+)$")
+        if parsed_name and parsed_name ~= "" then
+            boss_level_name = parsed_name
+        end
+    end
+
+    -- 优先挑选位于 Boss 子关卡中的入口点；找不到再兜底第一个Tag点。
+    local target_actor = nil
+    for _, actor in ipairs(tagged_actors) do
+        local level_name = ""
+        local level_ok = pcall(function()
+            level_name = actor:GetLevelName() or ""
+        end)
+        if level_ok then
+            log("RequestTravelToBossMap candidate level=", tostring(level_name))
+            if boss_level_name ~= "" and string.find(level_name, boss_level_name, 1, true) then
+                target_actor = actor
+                break
+            end
+        end
+    end
+
+    if target_actor == nil then
+        target_actor = tagged_actors[1]
+        log("RequestTravelToBossMap fallback first BossEntry actor")
+    end
+
+    if target_actor == nil then
+        log("RequestTravelToBossMap failed: target_actor nil after selection")
+        return
+    end
+
+    local dest_location = target_actor:K2_GetActorLocation()
+    local dest_rotation = target_actor:K2_GetActorRotation()
+
+    local teleported = false
+    local tele_ok, tele_err = pcall(function()
+        teleported = player_pawn:K2_TeleportTo(dest_location, dest_rotation)
+    end)
+
+    if not tele_ok then
+        log("RequestTravelToBossMap failed: K2_TeleportTo error", tostring(tele_err))
+        return
+    end
+
+    if not teleported then
+        -- 兜底：某些运行时下 K2_TeleportTo 返回 false，但 SetActorLocationAndRotation 仍可成功
+        local sweep_hit = nil
+        local set_ok, set_err = pcall(function()
+            teleported = player_pawn:K2_SetActorLocationAndRotation(dest_location, dest_rotation, false, sweep_hit, true)
+        end)
+        if not set_ok then
+            log("RequestTravelToBossMap failed: SetActorLocationAndRotation error", tostring(set_err))
+            return
+        end
+    end
+
+    if teleported then
+        log("RequestTravelToBossMap success: teleported to BossEntry tag=", tostring(boss_entry_tag))
+    else
+        log("RequestTravelToBossMap failed: teleport returned false")
+    end
 end
 
 -- 核心技能RPC（服务端权威逻辑）：
@@ -85,6 +209,7 @@ end
 -- 3) 调用 ActivateSkill 触发本次技能释放
 -- 采用“首次创建、后续复用”的方式，减少重复创建开销。
 function UGCPlayerController:ServerRPC_TriggerFireSkill()
+    -- 服务端权威：只在服务端创建/激活技能实例，避免客户端伪造技能状态
     local player_pawn = UGCGameSystem.GetPlayerPawnByPlayerController(self)
     if player_pawn == nil then
         log("ServerRPC_TriggerFireSkill failed: player_pawn is nil")
@@ -112,6 +237,27 @@ function UGCPlayerController:ServerRPC_TriggerFireSkill()
     -- 触发技能执行（进入技能蓝图时间线/阶段）。
     self.fire_skill_instance:ActivateSkill()
     log("fire skill activated")
+end
+
+-- 模块四独立测试：客户端UI就绪后请求DS开启Boss倒计时
+function UGCPlayerController:ServerRPC_DevStartBossChallenge()
+    -- 仅用于开发联调：
+    -- 客户端UI确认可见后，再通知服务端启动倒计时，避免“倒计时先跑完，UI还没建好”的问题。
+    if not UGCGameSystem.IsServer() then
+        return
+    end
+
+    if not pve_config.DEV_AUTO_START_COUNTDOWN then
+        return
+    end
+
+    local game_state = UGCGameSystem.GameState
+    if game_state and game_state.StartBossChallenge then
+        game_state:StartBossChallenge(nil)
+        log("ServerRPC_DevStartBossChallenge -> StartBossChallenge")
+    else
+        log("ServerRPC_DevStartBossChallenge failed: game_state or StartBossChallenge missing")
+    end
 end
 
 return UGCPlayerController
