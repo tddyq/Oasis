@@ -13,9 +13,13 @@ local pve_config = {
 
     -- 模块一/二：火焰技能链路配置
     fire_skill_class_path = "Asset/Blueprint/Prefabs/Skills/BP_MyFireSkill.BP_MyFireSkill_C",
-    fire_input_tags = {
-        "Input.Action.Attack"
-    },
+    -- 留空则 AddSkillByClass 使用技能蓝图「预设槽位」（通常为一技能 Slot0，对应 PC 的 T 键与 HUD 第一技能格）
+    -- 勿填 Skill.Slot.Main（该槽多用于怪物），否则 T 键/HUD 槽位会对不齐
+    fire_skill_slot = "",
+    -- 不绑定 Input.Action.Attack，避免左键与火焰技能共用；施法由 PersistEffect 原生 T 键 + HUD 技能钮处理
+    fire_input_tags = {},
+    auto_mount_fire_skill_on_beginplay = true, -- 进图预挂载：Pawn BeginPlay(服务端) + 客户端 RPC 双路径
+    fire_skill_mount_retry_seconds = 0.1, -- Pawn 未就绪时服务端重试挂载间隔
     debug_auto_fire_once = false, -- 仅模块一/二链路联调用，开启会进图自动触发一次技能
     debug_log = true, -- 建议联调期间保持 true，便于定位RPC/倒计时/传送分支
 

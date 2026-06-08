@@ -42,7 +42,7 @@ end
 ---@param game_state UGCGameState_C
 function UI01:BindGameState(game_state)
     -- 客户端在 UI 初始化后绑定一次 GameState，
-    -- 后续通过 OnRep -> NotifyUIRefresh 驱动实时刷新。
+    -- 后续通过 GameState OnRep -> PlayerController:RefreshBossUIFromGameState 驱动实时刷新。
     self.bound_game_state = game_state
     self:RefreshBossChallengeUI(game_state.BossChallengeActive or 0, game_state.BossCountdown or 0)
 end

@@ -1,10 +1,12 @@
+---@class BP_UGCMobSpawnerManager_C:BP_UGCMobSpawnerManager_C
+--Edit Below--
 ---@class BP_UGCMobSpawnerManager_C:AUGCMobSpawnerManager
 local BP_UGCMobSpawnerManager = {}
 
 --[[
     模块定位（方案A 模块三）：
     1) 监听刷怪器管理器生命周期事件（波次开始、结束、全灭）
-    2) 当所有怪物死亡时，向 GameState 发送“进入Boss挑战倒计时”的信号
+    2) 当所有怪物死亡时，向 GameMode 发送“进入Boss挑战倒计时”的信号
     3) 本脚本只跑在服务器，客户端直接 return，避免重复触发
 ]]
 
@@ -63,12 +65,11 @@ function BP_UGCMobSpawnerManager:OnAllMobDie()
 
     print("[BP_UGCMobSpawnerManager] OnAllMobDie - 清关事件触发")
 
-    local game_state = UGCGameSystem.GameState
-    if game_state and game_state.StartBossChallenge then
-        -- 把当前 spawner_manager 传给 GameState，便于后续循环重刷时直接复用
-        game_state:StartBossChallenge(self)
+    local game_mode = UGCGameSystem.GameMode
+    if game_mode and game_mode.StartBossChallenge then
+        game_mode:StartBossChallenge(self)
     else
-        print("[BP_UGCMobSpawnerManager] StartBossChallenge missing on GameState")
+        print("[BP_UGCMobSpawnerManager] StartBossChallenge missing on GameMode")
     end
 end
 

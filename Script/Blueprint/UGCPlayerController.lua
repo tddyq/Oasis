@@ -11,84 +11,294 @@ local UGCPlayerController = {}
     设计原则：
     - 所有会改动游戏状态的行为均在服务端执行
     - 客户端函数只做输入与RPC发起
+    - 技能挂载（AddSkillByClass）与施法分离；进图预挂载
+    - 施法默认走 PersistEffect 原生 T/HUD；fire_input_tags 非空时才绑 Lua RPC 施法
+    - 进图挂载入口：Pawn BeginPlay(服务端) / PC BeginPlay(服务端) / 客户端 RPC 三条并行
+    - 技能挂载在 PlayerController（AddSkillByClass 需 PC 取 Pawn Actor）；Pawn 仅作 BeginPlay 触发
 ]]
 
--- 运行时配置模块：
--- - fire_skill_class_path：主火焰技能蓝图类路径
--- - fire_input_tags：触发技能的输入Tag数组
--- - debug_auto_fire_once / debug_log：调试开关
 local pve_config = UGCGameSystem.UGCRequire("Script.Common.pve_config")
 
--- 统一日志函数，便于在日志中过滤 [UGCPlayerController] 前缀。
--- 当 pve_config.debug_log 为 false 时，此函数不输出日志。
+---@field private fire_skill_instance any @服务端缓存的 PersistEffect 技能实例，挂载后复用
+---@field private fire_mount_requested boolean @客户端是否已发过 InitFireSkill RPC，防重复
+---@field private fire_mount_retry_delegate any @服务端挂载失败时的重试定时器委托
+---@field private boss_main_ui UI01_C @【仅客户端】Boss 挑战主界面 Widget
+---@field private ui_retry_delegate any @【仅客户端】UI 创建失败时的重试定时器委托
+---@field private dev_start_requested boolean @【仅客户端】Dev 模式是否已发过开倒计时 RPC
+
 local function log(...)
     if pve_config.debug_log then
         ugcprint("[UGCPlayerController]", ...)
     end
 end
 
--- 声明“允许客户端调用到服务端”的RPC函数白名单。
--- 注意：这里要返回多个字符串值，不能写成一个逗号拼接的大字符串。
+-- =============================================================================
+-- 模块一/二：火焰技能 —— 挂载（服务端）与可选 Lua 施法 RPC
+-- =============================================================================
+
+---@return UGCPlayerPawn_C|nil
+local function get_player_pawn(self)
+    return UGCGameSystem.GetPlayerPawnByPlayerController(self)
+end
+
+-- 服务端权威：LoadClass + AddSkillByClass 挂到 Pawn Actor，实例缓存在 PC。
+---@return boolean
+function UGCPlayerController:EnsureFireSkillMounted()
+    if not UGCGameSystem.IsServer() then
+        return false
+    end
+
+    if self.fire_skill_instance ~= nil then
+        return true
+    end
+
+    local player_pawn = get_player_pawn(self)
+    if player_pawn == nil then
+        log("EnsureFireSkillMounted failed: player_pawn nil")
+        return false
+    end
+
+    local full_class_path = UGCMapInfoLib.GetRootLongPackagePath() .. pve_config.fire_skill_class_path
+    local skill_class = UGCObjectUtility.LoadClass(full_class_path)
+    if skill_class == nil then
+        log("EnsureFireSkillMounted LoadClass failed:", full_class_path)
+        return false
+    end
+
+    local skill_slot = pve_config.fire_skill_slot
+    if skill_slot ~= nil and skill_slot ~= "" then
+        self.fire_skill_instance = UGCPersistEffectSystem.AddSkillByClass(
+            player_pawn, skill_class, nil, skill_slot)
+    else
+        self.fire_skill_instance = UGCPersistEffectSystem.AddSkillByClass(player_pawn, skill_class)
+    end
+
+    if self.fire_skill_instance == nil then
+        log("EnsureFireSkillMounted AddSkillByClass failed")
+        return false
+    end
+
+    log("fire skill instance created")
+    return true
+end
+
+function UGCPlayerController:TryMountFireSkillOnServer()
+    if not UGCGameSystem.IsServer() then
+        return
+    end
+
+    if self:EnsureFireSkillMounted() then
+        self:StopFireSkillMountRetry()
+        return
+    end
+
+    self:StartFireSkillMountRetry()
+end
+
+function UGCPlayerController:StartFireSkillMountRetry()
+    if self.fire_mount_retry_delegate ~= nil then
+        return
+    end
+
+    self.fire_mount_retry_delegate = ObjectExtend.CreateDelegate(self, function()
+        if self:EnsureFireSkillMounted() then
+            self:StopFireSkillMountRetry()
+        end
+    end)
+
+    local retry_seconds = pve_config.fire_skill_mount_retry_seconds or 0.1
+    if retry_seconds < 0.1 then
+        retry_seconds = 0.1
+    end
+    KismetSystemLibrary.K2_SetTimerDelegateForLua(self.fire_mount_retry_delegate, self, retry_seconds, true)
+end
+
+function UGCPlayerController:StopFireSkillMountRetry()
+    if self.fire_mount_retry_delegate then
+        ObjectExtend.DestroyDelegate(self.fire_mount_retry_delegate)
+        self.fire_mount_retry_delegate = nil
+    end
+end
+
 function UGCPlayerController:GetAvailableServerRPCs()
-    -- 关键修复：必须返回“多值”，不是一个逗号拼接字符串
-    -- 若白名单缺失，对应 RPC 即使函数存在也不会被远端调用。
+    -- ServerRPC_InitFireSkill：客户端请求进图预挂载（仅 AddSkillByClass，不施法）
     return
     "RequestTravelToBossMap",
+    "ServerRPC_InitFireSkill",
     "ServerRPC_TriggerFireSkill",
     "ServerRPC_DevStartBossChallenge"
 end
 
--- PlayerController初始化回调（BeginPlay）：
--- 1) 先调用父类，保证蓝图基础初始化流程正常
--- 2) 仅客户端执行输入绑定，服务端直接返回
--- 3) 读取配置中的输入Tag并绑定到 OnFireInputTriggered
--- 4) 可选执行“自动触发一次技能”用于调试链路
+-- BeginPlay 按端分叉：服务端尝试挂载；客户端绑可选输入 Tag + 发 Init RPC 兜底
 function UGCPlayerController:ReceiveBeginPlay()
     self.SuperClass.ReceiveBeginPlay(self)
     log("ReceiveBeginPlay")
 
     if UGCGameSystem.IsServer() then
+        if pve_config.auto_mount_fire_skill_on_beginplay then
+            self:TryMountFireSkillOnServer()
+        end
         return
     end
 
-    -- 遍历配置中的输入Tag：
-    -- 每个Tag都会绑定同一个回调函数，方便统一处理技能触发。
+    -- BindInputMapping：客户端把 fire_input_tags 绑到 OnFireInputTriggered；空表则走原生 T/HUD
     for _, tag_name in ipairs(pve_config.fire_input_tags) do
         local input_tag = UGCGameplayTagSystem.RequestGameplayTag(tag_name)
         if input_tag ~= nil then
-            -- ETriggerEvent.Triggered 表示输入动作达到触发态时回调。
             UGCInputSystem.BindInputMapping(self, input_tag, ETriggerEvent.Triggered, self.OnFireInputTriggered)
             log("BindInputMapping success:", tag_name)
         else
-            -- 如果Tag请求失败，通常是Tag名称写错或项目中未注册。
             log("RequestGameplayTag failed:", tag_name)
         end
     end
+    -- fire_input_tags 为空时：不绑左键/攻击，一技能由引擎映射 TriggerActiveSkill(T) 触发预设槽位技能
 
-    -- 调试开关：用于验证输入/网络/技能链路是否连通。
-    -- 生产配置建议保持 false，避免进图自动施法。
+    -- 客户端 RPC 兜底：晚于 Pawn/服务端 PC BeginPlay 时仍可触发挂载
+    if pve_config.auto_mount_fire_skill_on_beginplay then
+        self:RequestInitFireSkill()
+    end
+
     if pve_config.debug_auto_fire_once then
         log("debug_auto_fire_once=true, trigger once")
         self:OnFireInputTriggered(nil, 0, 0, "debug_auto_fire_once")
     end
+
+    if not self:TryInitBossUI() then
+        self:StartInitUIRetry()
+    end
 end
 
--- 输入触发回调（客户端执行）。
--- 参数由输入系统传入：
--- - InputValue：输入值（按键/轴等）
--- - ElapsedTime：输入持续时间
--- - TriggeredTime：触发时间
--- - InputTag：触发本次回调的GameplayTag
--- 本函数只负责“发起RPC请求”，真正的技能创建与激活在服务端执行。
+-- 可选 Lua 输入回调（客户端）：fire_input_tags 非空时由 BindInputMapping 触发
 function UGCPlayerController:OnFireInputTriggered(InputValue, ElapsedTime, TriggeredTime, InputTag)
     log("OnFireInputTriggered", tostring(InputTag))
+    -- CallUnrealRPC：客户端 -> 服务端 ServerRPC_TriggerFireSkill（仅施法，不负责首次挂载）
     UnrealNetwork.CallUnrealRPC(self, self, "ServerRPC_TriggerFireSkill")
 end
 
--- 示例RPC：客户端请求服务端切换关卡。
--- 保留该函数便于验证RPC白名单机制是否工作正常。
+-- 客户端：进图预挂载请求，同一局只发一次 RPC
+function UGCPlayerController:RequestInitFireSkill()
+    if self.fire_mount_requested then
+        return
+    end
+    self.fire_mount_requested = true
+
+    log("RequestInitFireSkill rpc")
+    UnrealNetwork.CallUnrealRPC(self, self, "ServerRPC_InitFireSkill")
+end
+
+-- RPC 处理端（服务端）：客户端 RequestInitFireSkill 的落地，只挂载不施法
+function UGCPlayerController:ServerRPC_InitFireSkill()
+    if not UGCGameSystem.IsServer() then
+        return
+    end
+
+    self:TryMountFireSkillOnServer()
+end
+
+-- RPC 处理端（服务端）：Lua 输入路径施法；正常玩法下 T/HUD 走 PersistEffect 原生链路
+function UGCPlayerController:ServerRPC_TriggerFireSkill()
+    if not UGCGameSystem.IsServer() then
+        return
+    end
+
+    if not self:EnsureFireSkillMounted() then
+        log("ServerRPC_TriggerFireSkill failed: skill not mounted")
+        return
+    end
+
+    self.fire_skill_instance:ActivateSkill()
+    log("fire skill activated")
+end
+
+-- =============================================================================
+-- 模块四：Boss 挑战 UI（客户端）
+-- =============================================================================
+
+---@return boolean
+function UGCPlayerController:TryInitBossUI()
+    if self.boss_main_ui ~= nil then
+        return true
+    end
+
+    local ui_class = UE.LoadClass(UGCMapInfoLib.GetRootLongPackagePath() .. "Asset/Blueprint/UI/UI01.UI01_C")
+    if ui_class == nil then
+        log("TryInitBossUI failed: ui_class nil")
+        return false
+    end
+
+    self.boss_main_ui = UserWidget.NewWidgetObjectBP(self, ui_class)
+    if self.boss_main_ui == nil then
+        log("TryInitBossUI failed: NewWidgetObjectBP nil")
+        return false
+    end
+
+    self.boss_main_ui:AddToViewport()
+    local game_state = UGCGameSystem.GameState
+    if game_state and self.boss_main_ui.BindGameState then
+        self.boss_main_ui:BindGameState(game_state)
+    end
+
+    self:StopInitUIRetry()
+    self:RefreshBossUIFromGameState()
+    log("TryInitBossUI success")
+
+    if pve_config.DEV_AUTO_START_COUNTDOWN and pve_config.DEV_AUTO_START_BY_CLIENT_READY ~= false then
+        self:RequestDevStartBossChallenge()
+    end
+    return true
+end
+
+function UGCPlayerController:RequestDevStartBossChallenge()
+    if self.dev_start_requested then
+        return
+    end
+    self.dev_start_requested = true
+
+    log("RequestDevStartBossChallenge rpc")
+    UnrealNetwork.CallUnrealRPC(self, self, "ServerRPC_DevStartBossChallenge")
+end
+
+function UGCPlayerController:StartInitUIRetry()
+    if self.ui_retry_delegate ~= nil then
+        return
+    end
+
+    self.ui_retry_delegate = ObjectExtend.CreateDelegate(self, function()
+        if self:TryInitBossUI() then
+            self:StopInitUIRetry()
+        end
+    end)
+
+    KismetSystemLibrary.K2_SetTimerDelegateForLua(self.ui_retry_delegate, self, 0.5, true)
+end
+
+function UGCPlayerController:StopInitUIRetry()
+    if self.ui_retry_delegate then
+        ObjectExtend.DestroyDelegate(self.ui_retry_delegate)
+        self.ui_retry_delegate = nil
+    end
+end
+
+function UGCPlayerController:RefreshBossUIFromGameState()
+    if self.boss_main_ui == nil then
+        self:TryInitBossUI()
+    end
+
+    local game_state = UGCGameSystem.GameState
+    if game_state == nil or self.boss_main_ui == nil or not self.boss_main_ui.RefreshBossChallengeUI then
+        return
+    end
+
+    local is_active = game_state.BossChallengeActive
+    local countdown = game_state.BossCountdown or 0
+    if is_active == nil then
+        is_active = countdown > 0 and 1 or 0
+    end
+
+    self.boss_main_ui:RefreshBossChallengeUI(is_active, countdown)
+end
+
 function UGCPlayerController:RequestTravelToBossMap()
-    -- 只允许服务端执行，避免客户端直接改位置导致状态不一致
     if not UGCGameSystem.IsServer() then
         return
     end
@@ -96,16 +306,11 @@ function UGCPlayerController:RequestTravelToBossMap()
     local map_boss = pve_config.MAP_BOSS or "/demo1/Map02"
     log("RequestTravelToBossMap RPC received on server ->", map_boss)
 
-    -- 点击挑战后先取消倒计时UI，防止按钮/数字残留在新阶段
-    local game_state = UGCGameSystem.GameState
-    if game_state and game_state.CancelBossChallenge then
-        game_state:CancelBossChallenge()
+    local game_mode = UGCGameSystem.GameMode
+    if game_mode and game_mode.CancelBossChallenge then
+        game_mode:CancelBossChallenge()
     end
 
-    -- 子关卡方案：
-    -- 保持在 UGCMap 同一会话，不做 Travel；
-    -- 通过 Tag 查找 Boss 入口点并传送当前玩家 Pawn。
-    -- 这样能避免“子关卡切换导致重生流程不完整”的黑屏/观战态问题。
     local player_pawn = UGCGameSystem.GetPlayerPawnByPlayerController(self)
     if player_pawn == nil then
         log("RequestTravelToBossMap failed: player_pawn nil")
@@ -120,7 +325,6 @@ function UGCPlayerController:RequestTravelToBossMap()
         return
     end
 
-    -- 使用 pcall 包裹引擎调用，防止运行时绑定差异导致脚本中断。
     local query_ok, query_err = pcall(function()
         gameplay_statics.GetAllActorsWithTag(self, boss_entry_tag, tagged_actors)
     end)
@@ -145,7 +349,6 @@ function UGCPlayerController:RequestTravelToBossMap()
         end
     end
 
-    -- 优先挑选位于 Boss 子关卡中的入口点；找不到再兜底第一个Tag点。
     local target_actor = nil
     for _, actor in ipairs(tagged_actors) do
         local level_name = ""
@@ -185,7 +388,6 @@ function UGCPlayerController:RequestTravelToBossMap()
     end
 
     if not teleported then
-        -- 兜底：某些运行时下 K2_TeleportTo 返回 false，但 SetActorLocationAndRotation 仍可成功
         local sweep_hit = nil
         local set_ok, set_err = pcall(function()
             teleported = player_pawn:K2_SetActorLocationAndRotation(dest_location, dest_rotation, false, sweep_hit, true)
@@ -203,46 +405,7 @@ function UGCPlayerController:RequestTravelToBossMap()
     end
 end
 
--- 核心技能RPC（服务端权威逻辑）：
--- 1) 根据Controller获取对应PlayerPawn
--- 2) 若技能实例不存在，则按配置路径加载技能类并添加到Pawn
--- 3) 调用 ActivateSkill 触发本次技能释放
--- 采用“首次创建、后续复用”的方式，减少重复创建开销。
-function UGCPlayerController:ServerRPC_TriggerFireSkill()
-    -- 服务端权威：只在服务端创建/激活技能实例，避免客户端伪造技能状态
-    local player_pawn = UGCGameSystem.GetPlayerPawnByPlayerController(self)
-    if player_pawn == nil then
-        log("ServerRPC_TriggerFireSkill failed: player_pawn is nil")
-        return
-    end
-
-    if self.fire_skill_instance == nil then
-        -- 拼接项目根包路径 + 配置相对路径，得到可加载的完整类路径。
-        local full_class_path = UGCMapInfoLib.GetRootLongPackagePath() .. pve_config.fire_skill_class_path
-        local skill_class = UGCObjectUtility.LoadClass(full_class_path)
-        if skill_class == nil then
-            log("LoadClass failed:", full_class_path)
-            return
-        end
-
-        -- 将PersistEffect技能类动态挂载到玩家Pawn上，返回技能实例。
-        self.fire_skill_instance = UGCPersistEffectSystem.AddSkillByClass(player_pawn, skill_class)
-        if self.fire_skill_instance == nil then
-            log("AddSkillByClass failed")
-            return
-        end
-        log("fire skill instance created")
-    end
-
-    -- 触发技能执行（进入技能蓝图时间线/阶段）。
-    self.fire_skill_instance:ActivateSkill()
-    log("fire skill activated")
-end
-
--- 模块四独立测试：客户端UI就绪后请求DS开启Boss倒计时
 function UGCPlayerController:ServerRPC_DevStartBossChallenge()
-    -- 仅用于开发联调：
-    -- 客户端UI确认可见后，再通知服务端启动倒计时，避免“倒计时先跑完，UI还没建好”的问题。
     if not UGCGameSystem.IsServer() then
         return
     end
@@ -251,12 +414,12 @@ function UGCPlayerController:ServerRPC_DevStartBossChallenge()
         return
     end
 
-    local game_state = UGCGameSystem.GameState
-    if game_state and game_state.StartBossChallenge then
-        game_state:StartBossChallenge(nil)
+    local game_mode = UGCGameSystem.GameMode
+    if game_mode and game_mode.StartBossChallenge then
+        game_mode:StartBossChallenge(nil)
         log("ServerRPC_DevStartBossChallenge -> StartBossChallenge")
     else
-        log("ServerRPC_DevStartBossChallenge failed: game_state or StartBossChallenge missing")
+        log("ServerRPC_DevStartBossChallenge failed: game_mode or StartBossChallenge missing")
     end
 end
 
