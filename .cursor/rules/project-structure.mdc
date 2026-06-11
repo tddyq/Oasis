@@ -1,0 +1,35 @@
+---
+description: 绿洲启元项目架构与文件权限规则
+globs: ["**/*.lua"]
+alwaysApply: true
+---
+
+# 项目结构说明与权限
+
+## 角色定位
+你是绿洲启元（和平精英 UGC）项目的 Lua 开发助手。项目基于 Unreal Engine 框架，采用 Lua 作为游戏逻辑脚本。
+
+## 核心目录与权限
+
+### ✅ 可写目录 —— 你只能在这个目录中新建或修改文件
+- **Script/**：**唯一可编辑区域**。包含开发者编写的所有 Lua 游戏逻辑。
+  - `Script/Blueprint/` – 蓝图相关 Lua
+  - `Script/Character/` – 角色逻辑
+  - `Script/Common/` – 公共函数
+  - `Script/GameAttribute/` – 游戏属性
+  - `Script/gamemode/` – 玩法模式脚本
+
+### ❌ 只读目录 —— 绝对不要修改这些目录中的任何文件
+- **Asset/** – 引擎资源文件（蓝图、模型、UI模板等）
+- **LuaHelper/** – Lua 类型定义与 LSP 配置文件，由编辑器自动生成
+- **Source/** – 引擎 C++ 源码和部分 Lua 框架代码
+- **Manual/** – 编辑器使用手册
+- **Navmesh/** – 导航网格数据
+- **oasis-api-docs/** – 本地 API 参考文档，只供查询
+
+> 如果你需要引用这些只读目录中的内容，请使用 `@File` 或 `@Folder` 指令，但绝对不要修改它们。
+
+## 项目上下文
+- 编辑器版本：OasisEraEditor
+- 开发环境根目录：`D:\WeGameApps\rail_apps\OasisEraEditor(2001776)\ShadowTrackerExtra\UGCProjects\demo1`
+- 所有生成代码的路径都应相对于此根目录，且只放在 `Script/` 下。

@@ -1,0 +1,29 @@
+---
+description: 文件操作权限与工作流
+globs: []
+alwaysApply: true
+---
+
+# 文件管理铁律
+
+## 可编辑区域
+- **只有 `Script/` 目录**。生成新 Lua 脚本或修改现有脚本，都必须位于 `Script/` 下。
+- 建议按功能在 `Script/` 下创建子目录，如 `Script/MyModule/`。
+
+## 严格禁止的操作
+- 不要修改 `Asset/`、`Source/`、`LuaHelper/`、`Manual/`、`Navmesh/` 中的任何文件。
+- 不要删除或重命名 `oasis-api-docs/` 内的文档。
+- 不要在项目根目录随意创建新文件夹。
+
+## 工作流
+1. **接收需求**：理解你要实现的功能。
+2. **查阅文档**：若涉及不熟悉的 API，先使用 `@File:oasis-api-docs/...` 查看。
+3. **编写代码**：在 `Script/` 适当位置新建或修改 Lua 文件。
+4. **提供注解**：确保所有新函数/类都加上了 EmmyLua 注解。
+5. **遵守规范**：遵循 `lua-style.mdc` 和 `emmylua.mdc` 的规则。
+
+## 与 Cursor 交互
+- 使用 `@File` 引用单个文件作为上下文。
+- 使用 `@Folder:Script` 让 AI 了解你当前的代码库。
+- 使用 `@LuaHelper`（如果 Cursor 支持）可让 AI 更精准地理解类型系统。
+- 聊天框顶部 `>` 命令可直接对选中的代码块执行操作（如 `> 修复 Bug`、`> 添加日志`）。

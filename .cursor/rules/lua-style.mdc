@@ -1,0 +1,34 @@
+---
+description: Lua 编码规范
+globs: ["Script/**/*.lua"]
+alwaysApply: true
+---
+
+# Lua 编码风格指南
+
+## 文件命名
+- 全部使用小写字母 + 下划线：`player_controller.lua`
+- 文件名应反映核心功能，不要使用拼音。
+
+## 命名规范
+- **类名**：PascalCase，如 `PlayerController`
+- **函数名**：PascalCase，如 `GetPlayerLocation`
+- **公有变量/字段**：PascalCase，如 `self.Health`
+- **私有变量/字段**：小写 + 下划线，如 `self.current_hp`
+- **常量**：全大写 + 下划线，如 `MAX_PLAYER_COUNT`
+- **布尔变量**：`is_` 或 `has_` 前缀，如 `is_alive`
+
+## 格式
+- 缩进：4个空格，禁止 Tab
+- 每行不超过 120 字符
+- 操作符两侧加空格，逗号后加空格
+
+## 文件结构
+```lua
+-- 1. 文件头注释（功能描述、作者、创建时间）
+-- 2. require 依赖
+-- 3. 常量定义
+-- 4. 局部变量
+-- 5. 类定义（使用 EmmyLua 注解）
+-- 6. 函数实现
+-- 7. 初始化逻辑

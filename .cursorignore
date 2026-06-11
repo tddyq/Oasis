@@ -1,0 +1,15 @@
+# 忽略所有没用的文件
+Asset/
+Navmesh/
+Saved/
+*.umap
+*.uasset
+DeleteFiles.txt
+demo1.ugcproj
+Thumbnail.png
+WhiteList.ini
+
+# 只保留有用的
+!Script/
+!LuaHelper/
+!oasis-docs/

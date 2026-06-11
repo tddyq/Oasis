@@ -1,0 +1,23 @@
+---
+description: 常见问题与调试
+globs: []
+alwaysApply: false
+---
+
+# 遇到问题怎么办？
+
+## 代码生成不正确
+1. 检查是否使用了正确的 `@File:oasis-api-docs/...` 上下文。
+2. 确保你的提示中明确了目标文件路径（必须在 `Script/` 下）。
+3. 如果 API 签名不匹配，优先信任 LuaHelper 的类型提示，并用文档交叉验证。
+
+## LuaHelper 不提示
+- 确认 `LuaHelper/` 文件夹位于项目根目录。
+- 重启 Cursor 或重新加载窗口。
+
+## 文档索引失效
+- 执行 `Cursor: Reload Index` 命令。
+- 确认 `oasis-api-docs/` 中没有被 `.cursorignore` 忽略（你的 `.cursorignore` 应确保不排除该目录）。
+
+## 其他
+- 绿洲启元开发者论坛：https://forum.developer.gp.qq.com/

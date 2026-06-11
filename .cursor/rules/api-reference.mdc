@@ -1,0 +1,26 @@
+---
+description: API文档与LuaHelper使用规则
+globs: []
+alwaysApply: true
+---
+
+# 如何使用 API 参考与代码提示
+
+## 1. 查询 API 文档
+- 本地文档位于 `oasis-api-docs/` 目录，按主题分类（如 `AI工具/`、`新手入门/`、`绿洲编辑器基础内容/` 等）
+- 使用指令：`@File:oasis-api-docs/具体分类/文件名.md` 让 AI 参考特定文档
+- 使用指令：`@Folder:oasis-api-docs` 让 AI 索引整个文档库（用于复杂需求）
+
+## 2. LuaHelper 自动补全
+- `LuaHelper/` 目录提供了完整的 LSP 定义，你在输入代码时会自动获得函数签名、参数类型和返回值提示。
+- 当不确定 API 用法时，先依赖 LuaHelper 的实时提示，再用 `@File` 查阅文档确认。
+
+## 3. 在线资源
+- 官方 API 手册：`https://developer.gp.qq.com/api/` （内容与本地文档一致）
+- 开发者 Wiki：`https://developer.gp.qq.com/wikieditor/`
+
+## 4. 提问模板
+- 需使用特定 API 时：
+  `@File:oasis-api-docs/新手入门/玩家API.md 请帮我写一个函数，让玩家传送到指定坐标`
+- 需要项目整体规范时：
+  `@Folder:oasis-api-docs 参考绿洲启元的物资系统，创建一个自定义物资刷新脚本`

@@ -1,0 +1,29 @@
+﻿{
+  "folders": [
+    {
+      "path": ".\\"
+    },
+    {
+      "path": "..\\..\\Content\\LuaHelper"
+    },
+    {
+      "path": "../../../../../../oasis_api_doc/oasis-docs-master"
+    }
+  ],
+  "settings": {
+    "files.watcherExclude": {
+      "**/Asset/**": true,
+      "**/Navmesh/**": true,
+      "**/Saved/**": true,
+      "**/*.umap": true,
+      "**/*.uasset": true
+    },
+    "search.exclude": {
+      "**/Asset/**": true,
+      "**/Navmesh/**": true,
+      "**/Saved/**": true,
+      "**/*.umap": true,
+      "**/*.uasset": true
+    }
+  }
+}

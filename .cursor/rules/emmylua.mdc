@@ -1,0 +1,15 @@
+---
+description: "EmmyLua 注解规范"
+globs: ["Script/**/*.lua"]
+alwaysApply: true
+---
+
+# EmmyLua 注解强制要求
+
+## 所有新建类、函数、字段都必须添加 EmmyLua 注解
+
+### 类注解
+```lua
+---@class ClassName : ParentClass
+---@field public FieldName Type @注释
+local ClassName = {}
