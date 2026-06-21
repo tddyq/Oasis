@@ -7,7 +7,7 @@
         "@modelcontextprotocol/server-memory"
       ],
       "env": {
-        "MEMORY_FILE_PATH": "${env:CURSOR_MEMORY_FILE}"
+        "MEMORY_FILE_PATH": "${workspaceFolder}/.cursor/memory/oasis-demo1-memory.jsonl"
       }
     }
   }
